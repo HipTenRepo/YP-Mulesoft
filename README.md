@@ -115,6 +115,16 @@ Things the field mapping has to handle:
 - **Lead conversion**: the user can't convert leads (the Integration license can't hold Edit Task).
 - **Contacts**: creating them needs BenefitsGuide object access (the `bgxx` ContactTrigger checks it).
 
+## After cloning
+
+The `{env}-secure.yaml` files are in the repo, already encrypted, so you don't edit them. Three things are deliberately not in git; get them from Stefan through a secure channel:
+
+1. **Anypoint access**: a login to the YourPolicy Anypoint org in Studio. The API spec is downloaded from Exchange when the project builds.
+2. **Keystores**: copy `yp_private_{env}.jks` and `yp-https-{env}.p12` into `src/main/resources/keystores/`. Originals are in `~/.yp-secrets/mulesoft/<env>/` on Stefan's machine.
+3. **`mule.key`** for each environment you want to run. It decrypts that environment's secure file.
+
+Then in Studio: File > Import > Anypoint Studio > Anypoint Studio project from File System, and set the Run Configuration as below.
+
 ## Run locally
 
 - **Studio**: Run Configuration > Environment: `mule.env=local`, `mule.key=<local key>`. VM argument: `-Danypoint.platform.gatekeeper=disabled`.
