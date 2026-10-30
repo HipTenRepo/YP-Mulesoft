@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- App-wide error handler (registered as default in global.xml). Errors propagate up from sub-flows and are handled once, here.
+	     Status/code mapping lives in src/main/resources/modules/errors.dwl. Mule logs the full error (logException) with the event/correlation id. -->
+	<error-handler name="global-error-handler">
+		<on-error-propagate type="ANY" doc:name="Any error" logException="true">
+			<ee:transform doc:name="Error response">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+import errorBody from modules::errors
+---
+errorBody(error, correlationId)]]></ee:set-payload>
+				</ee:message>
+				<ee:variables>
+					<ee:set-variable variableName="httpStatus"><![CDATA[%dw 2.0
+output application/java
+import errorStatus from modules::errors
+---
+errorStatus(error)]]></ee:set-variable>
+					<ee:set-variable variableName="outboundHeaders"><![CDATA[%dw 2.0
+output application/java
+---
+(vars.outboundHeaders default {}) ++ { "x-correlation-id": correlationId }]]></ee:set-variable>
+				</ee:variables>
+			</ee:transform>
+		</on-error-propagate>
+	</error-handler>
+</mule>

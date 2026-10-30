@@ -1,0 +1,26 @@
+# prod: non-secret settings. Secrets live in prod-secure.yaml (encrypted with the prod mule.key).
+http:
+  host: "0.0.0.0"
+  port: "8081"
+
+# HTTPS listener: self-signed server certificate (CloudHub 2.0 last-mile security). Passwords in prod-secure.yaml.
+https:
+  keystore:
+    path: "keystores/yp-https-prod.p12"
+    alias: "yp-https"
+    type: "pkcs12"
+
+salesforce:
+  # YPProd (not set up yet)
+  # External Client App consumer key (public identifier, not a secret)
+  consumerKey: "TODO-prod-consumer-key"
+  tokenEndpoint: "https://login.salesforce.com/services/oauth2/token"
+  audienceUrl: "https://login.salesforce.com"
+  principal: "TODO-prod-integration-username"
+  keystore:
+    path: "keystores/yp_private_prod.jks"
+    alias: "TODO-prod-alias"
+
+# API Manager instance this app registers with (autodiscovery). Policies such as Client ID Enforcement are applied there.
+api:
+  id: "TODO-prod-api-instance-id"

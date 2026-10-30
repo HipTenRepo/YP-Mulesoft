@@ -1,0 +1,10 @@
+# dev: SECRETS ONLY. Every value is encrypted (AES / CBC / random IV) with the dev mule.key.
+# Encrypt a new value:  java -cp ~/AnypointStudio/tools/secure-properties-tool.jar com.mulesoft.tools.SecurePropertiesTool string encrypt AES CBC "<dev mule.key>" "<value>" --use-random-iv
+salesforce:
+  keystore:
+    password: "![ECMTrRJfs0fAN6Qr+LJ09+QIcB8qp3QxnNU9CXsLGj0=]"
+
+https:
+  keystore:
+    password: "![SwX6PsjgUhNRSZip+HtesSn3H2hG4b33yovpopqvImwbQIKVQdk9NukgRRQQ0sJj]"
+    keyPassword: "![SwX6PsjgUhNRSZip+HtesSn3H2hG4b33yovpopqvImwbQIKVQdk9NukgRRQQ0sJj]"

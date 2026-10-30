@@ -1,0 +1,26 @@
+# uat: non-secret settings. Secrets live in uat-secure.yaml (encrypted with the uat mule.key).
+http:
+  host: "0.0.0.0"
+  port: "8081"
+
+# HTTPS listener: self-signed server certificate (CloudHub 2.0 last-mile security). Passwords in uat-secure.yaml.
+https:
+  keystore:
+    path: "keystores/yp-https-uat.p12"
+    alias: "yp-https"
+    type: "pkcs12"
+
+salesforce:
+  # YPUAT
+  # External Client App consumer key (public identifier, not a secret)
+  consumerKey: "3MVG9nDqxWgBl2AeGaF_R4heo4ks_vkT4xZWjFtA1NnnOr5IVF8_9MQpTS8oWupRbsf9K6GVHSMvgLsZQQji_"
+  tokenEndpoint: "https://test.salesforce.com/services/oauth2/token"
+  audienceUrl: "https://test.salesforce.com"
+  principal: "yourpolicy_mulesoft_integration@hipten.com.uat"
+  keystore:
+    path: "keystores/yp_private_uat.jks"
+    alias: "yp_mulesoft_integration"
+
+# API Manager instance this app registers with (autodiscovery). Policies such as Client ID Enforcement are applied there.
+api:
+  id: "21216714"

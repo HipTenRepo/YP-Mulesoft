@@ -1,0 +1,10 @@
+# uat: SECRETS ONLY. Every value is encrypted (AES / CBC / random IV) with the uat mule.key.
+# Encrypt a new value:  java -cp ~/AnypointStudio/tools/secure-properties-tool.jar com.mulesoft.tools.SecurePropertiesTool string encrypt AES CBC "<uat mule.key>" "<value>" --use-random-iv
+salesforce:
+  keystore:
+    password: "![Msq6MqBKjGZJaKR/+gX67jAd1iRhscLPpvrB8YQYJfGEll0D7hMONdkxmIMwCLG/]"
+
+https:
+  keystore:
+    password: "![7PzBbOXYQ4Z32x4UDfYBhs2GHld2U1FUp4f1K+MabW09HooD4UBOT4foHem9bJzN]"
+    keyPassword: "![CbfN4cIR4qiJ3sbCuBbZxgDj5E0N1Rt34IxH3xBj/+4xoCTMpMYv64iIbEsR7tgC]"

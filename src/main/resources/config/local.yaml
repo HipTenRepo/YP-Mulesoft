@@ -1,0 +1,26 @@
+# local: non-secret settings. Secrets live in local-secure.yaml (encrypted with this environment's mule.key).
+http:
+  host: "0.0.0.0"
+  port: "8081"
+
+# HTTPS listener: self-signed server certificate (CloudHub 2.0 last-mile security). Passwords in local-secure.yaml.
+https:
+  keystore:
+    path: "keystores/yp-https-local.p12"
+    alias: "yp-https"
+    type: "pkcs12"
+
+salesforce:
+  # YPHTDEV1
+  # External Client App consumer key (public identifier, not a secret)
+  consumerKey: "3MVG9nDqxWgBl2AeQXccq8Lnx6XkzYkfUbTWKPJ9eOXNemmQcZtxpY4NZFqve9j9cBl21BLcXLkOKH.b5ek7."
+  tokenEndpoint: "https://test.salesforce.com/services/oauth2/token"
+  audienceUrl: "https://test.salesforce.com"
+  principal: "yourpolicy_mulesoft_integration@hipten.com.htdev1"
+  keystore:
+    path: "keystores/yp_private_dev.jks"
+    alias: "yp_mulesoft_integration"
+
+# API Manager instance this app registers with (autodiscovery). Policies such as Client ID Enforcement are applied there.
+api:
+  id: "21216714"

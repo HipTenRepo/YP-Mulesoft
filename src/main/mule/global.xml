@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:api-gateway="http://www.mulesoft.org/schema/mule/api-gateway"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+	xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties"
+	xmlns:tls="http://www.mulesoft.org/schema/mule/tls"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd
+http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd
+http://www.mulesoft.org/schema/mule/api-gateway http://www.mulesoft.org/schema/mule/api-gateway/current/mule-api-gateway.xsd">
+
+	<!-- Every flow without its own error handler uses global-error-handler (error-handling.xml) -->
+	<configuration doc:name="Configuration" defaultErrorHandler-ref="global-error-handler" />
+
+	<!-- mule.env picks the config files (local | dev | uat | prod). Defaults to local; Run Configuration / CloudHub override it. -->
+	<global-property doc:name="Global Property" name="mule.env" value="local" />
+
+	<!-- Plain settings -->
+	<configuration-properties doc:name="Configuration properties" file="config/${mule.env}.yaml" />
+
+	<!-- Secrets: decrypted at startup with mule.key (Run Configuration > Environment locally, protected property on CloudHub) -->
+	<secure-properties:config name="Secure_Properties_Config" doc:name="Secure Properties Config" file="config/${mule.env}-secure.yaml" key="${mule.key}">
+		<secure-properties:encrypt algorithm="AES" mode="CBC" useRandomIVs="true" />
+	</secure-properties:config>
+
+	<!-- HTTPS: the app's own private key + self-signed certificate. Only TLS 1.2 / 1.3 accepted. -->
+	<tls:context name="HTTPS_TLS_Context" doc:name="TLS Context" enabledProtocols="TLSv1.2,TLSv1.3">
+		<tls:key-store type="${https.keystore.type}" path="${https.keystore.path}" alias="${https.keystore.alias}" password="${secure::https.keystore.password}" keyPassword="${secure::https.keystore.keyPassword}" />
+	</tls:context>
+
+	<http:listener-config name="yp-integration-api-httpListenerConfig" doc:name="HTTPS Listener config">
+		<http:listener-connection host="${http.host}" port="${http.port}" protocol="HTTPS" tlsContext="HTTPS_TLS_Context" />
+	</http:listener-config>
+
+	<salesforce:sfdc-config name="Salesforce_Config" doc:name="Salesforce Config">
+		<salesforce:jwt-connection
+			consumerKey="${salesforce.consumerKey}"
+			keyStore="${salesforce.keystore.path}"
+			storePassword="${secure::salesforce.keystore.password}"
+			certificateAlias="${salesforce.keystore.alias}"
+			principal="${salesforce.principal}"
+			tokenEndpoint="${salesforce.tokenEndpoint}"
+			audienceUrl="${salesforce.audienceUrl}" />
+	</salesforce:sfdc-config>
+
+	<!-- Registers the app with its API Manager instance (api.id per environment); policies such as Client ID Enforcement are applied from there. -->
+	<api-gateway:autodiscovery apiId="${api.id}" doc:name="API Autodiscovery" flowRef="yp-integration-api-main" />
+</mule>

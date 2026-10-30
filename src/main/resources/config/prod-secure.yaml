@@ -1,0 +1,10 @@
+# prod: SECRETS ONLY. Encrypt each value with the prod mule.key (AES / CBC / random IV) once the prod External Client App exists.
+# Encrypt a new value:  java -cp ~/AnypointStudio/tools/secure-properties-tool.jar com.mulesoft.tools.SecurePropertiesTool string encrypt AES CBC "<prod mule.key>" "<value>" --use-random-iv
+salesforce:
+  keystore:
+    password: "TODO-encrypt"
+
+https:
+  keystore:
+    password: "TODO-encrypt"
+    keyPassword: "TODO-encrypt"
