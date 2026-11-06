@@ -2,7 +2,7 @@
 
 MuleSoft app that connects YourPolicy's Salesforce to Applied Epic. Built for Mission Control story **PAN:10404** (feature PAN:10335, "One named connection Salesforce ↔ MuleSoft ↔ Applied Epic").
 
-Source: https://github.com/HTStefan/YP-Mulesoft (private). Keep this README current when you change something.
+Source: https://github.com/HipTenRepo/YP-Mulesoft (private). Keep this README current when you change something.
 
 ## Status (2026-10-30)
 
