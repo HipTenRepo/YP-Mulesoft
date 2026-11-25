@@ -24,3 +24,23 @@ salesforce:
 # API Manager instance this app registers with (autodiscovery). Policies such as Client ID Enforcement are applied there.
 api:
   id: "21216714"
+
+# Applied Epic sandbox S1 (P&C data), DevCenter app HiptenSBmockappYOURP02S1V1. Key and secret in uat-secure.yaml.
+applied:
+  host: "api.myappliedproducts.com"
+  tokenPath: "/v1/auth/connect/token"
+  audience: "api.myappliedproducts.com/epic"
+  responseTimeout: "30000"
+
+# Applied Epic files (epic-files.xml). Links point back at the host Salesforce called, so no public URL is configured.
+# frameAncestors = the Lightning domains of YPUAT and YPHTDEV1 (both orgs use this one sandbox app), the only pages allowed
+# to frame a preview. Update after a sandbox refresh.
+files:
+  frameAncestors: "https://your-policy--uat.sandbox.lightning.force.com https://your-policy--uat.sandbox.my.salesforce.com https://your-policy--htdev1.sandbox.lightning.force.com https://your-policy--htdev1.sandbox.my.salesforce.com"
+  linkTtlMinutes: "5"
+  pageSize: "50"
+  folderPageSize: "100"
+  # Preview size limit in bytes; 0 = no limit. The limit (5 MB proposed) waits for Your Policy's sign-off.
+  previewMaxBytes: "0"
+  previewTypes: "pdf,png,jpg,jpeg,gif"
+  storageTimeoutMs: "60000"

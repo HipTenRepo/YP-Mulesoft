@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd">
+
+	<!-- Salesforce repository. Every Salesforce call goes through a sub-flow here, all on Salesforce_Config (global.xml),
+	     which logs in as the integration user (JWT bearer). Bulk API, Platform Events and other Salesforce operations go here too.
+	     Callers set vars.salesforceRequest and get the result as payload (use target on the flow-ref to keep their payload).
+	     Errors propagate as SALESFORCE:* error types; the caller decides how to handle them. -->
+
+	<!-- vars.salesforceRequest = { soql, parameters? }. Payload: the matching records.
+	     Bind values with :name in the SOQL and pass them in parameters, never by concatenating text. -->
+	<sub-flow name="salesforce-query">
+		<salesforce:query doc:name="Query" config-ref="Salesforce_Config">
+			<salesforce:salesforce-query><![CDATA[#[vars.salesforceRequest.soql]]]></salesforce:salesforce-query>
+			<salesforce:parameters><![CDATA[#[vars.salesforceRequest.parameters default {}]]]></salesforce:parameters>
+		</salesforce:query>
+	</sub-flow>
+
+	<!-- vars.salesforceRequest = { "type": sObject API name, records: [ {...} ] }. Payload: the create result per record. -->
+	<sub-flow name="salesforce-create">
+		<salesforce:create doc:name="Create" config-ref="Salesforce_Config" type="#[vars.salesforceRequest.'type']">
+			<salesforce:records><![CDATA[#[vars.salesforceRequest.records]]]></salesforce:records>
+		</salesforce:create>
+	</sub-flow>
+</mule>

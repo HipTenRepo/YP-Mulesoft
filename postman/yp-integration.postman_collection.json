@@ -1,0 +1,2425 @@
+{
+  "info": {
+    "_postman_id": "39b7d580-9285-4fb0-89c6-6c193a99c093",
+    "name": "HipTen MuleSoft (yp-integration)",
+    "description": "HipTen's MuleSoft app between YourPolicy's Salesforce and Applied Epic.\n\nUSAGE:\n1. Import this collection and the environments (Local, Dev, UAT).\n2. Pick the environment top right. client_id / client_secret (API Manager client app 'Salesforce UAT') are filled in for Dev and UAT.\n3. Run Health, then Connection Test, then the Files folder top to bottom.\n\nEvery call needs the client_id and client_secret headers (Client ID Enforcement in API Manager, instance 21216714).\nLocally the policy is off, but the API spec still requires the two headers, so any value works.\nLocal uses a self-signed certificate: SSL verification is switched off on these requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Errors from the app carry a correlationId; quote it when checking the Mule logs.",
+          "if (pm.response.code >= 400) {",
+          "    let j = {}; try { j = pm.response.json(); } catch (e) {}",
+          "    if (pm.response.code === 401 && j.error) console.warn('401 from API Manager: check client_id / client_secret for this environment.');",
+          "    else console.warn(pm.response.code + ' ' + (j.code || '') + ': ' + (j.message || pm.response.text()) + ' | correlationId: ' + (j.correlationId || 'n/a'));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "client_id",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "client_secret",
+            "value": "{{client_secret}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "description": "App is up. Returns status, application, environment (mule.env) and timestamp."
+      },
+      "protocolProfileBehavior": {
+        "strictSSL": false
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Connection Test (Salesforce + Applied Epic)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "client_id",
+            "value": "{{client_id}}"
+          },
+          {
+            "key": "client_secret",
+            "value": "{{client_secret}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"source\": \"Salesforce\",\n    \"orgId\": \"{{org_id}}\",\n    \"message\": \"Postman connection test\",\n    \"sentAt\": \"{{$isoTimestamp}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/connection-test",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "connection-test"
+          ]
+        },
+        "description": "Checks both legs:\n- salesforce: reads the integration user's own User record (JWT bearer).\n- appliedEpic: gets an Applied token (cached in the app) and calls GET /epic/client/v1/clients?limit=1.\n\nBody fields are required by the API spec: source must be \"Salesforce\", orgId 15-18 chars, sentAt a datetime."
+      },
+      "protocolProfileBehavior": {
+        "strictSSL": false
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const j = pm.response.json();",
+              "pm.test('Salesforce CONNECTED', () => pm.expect(j.salesforce && j.salesforce.status).to.eql('CONNECTED'));",
+              "pm.test('Applied Epic CONNECTED', () => pm.expect(j.appliedEpic && j.appliedEpic.status).to.eql('CONNECTED'));",
+              "if (j.appliedEpic && j.appliedEpic.status !== 'CONNECTED') {",
+              "    console.warn('Applied Epic ' + j.appliedEpic.httpStatus + ': ' + j.appliedEpic.detail);",
+              "    console.warn(JSON.stringify(j.appliedEpic.response));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Files (Applied Epic attachments)",
+      "description": "Full local test of the files API. Run the folders in order (Run collection works too).\n\n1 Supported files: list, then the same PDF previewed and downloaded; single-use download; the PDF through the Policy record.\n2 Files that can't be previewed: Word, .eml, .msg refused for preview, downloaded fine.\n3 Files Applied sends without a download link: the list can't tell, Get link answers NOT_AVAILABLE.\n4 Access checks and bad requests.\n5 List: policy, paging, unknown records, bad input.\n\nEach OK Get link writes a Log__c row in the Salesforce dev org (no file name, PHI rule).\nEverything should pass.\n\nresultCode values: OK, NOT_FOUND, REFUSED, NOT_AVAILABLE, TOO_LARGE (off: no preview size limit yet), UNAVAILABLE.\nTest data: Applied sandbox (S1). Only Local runs this code for now.",
+      "item": [
+        {
+          "name": "1 Supported files: preview and download",
+          "description": "PDF and images can be previewed and downloaded. The test client's PDF is previewed and then downloaded, so you can compare both. No image in the Applied sandbox has a download link, so images are not tested here.\n\nManual check: wait 6 minutes after 1.2 and send 1.3 again: 404 (the link expired).",
+          "item": [
+            {
+              "name": "1.1 List the test client's files",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "8 files: 1 PDF, 5 Word, 1 eml, 1 msg. canPreview is true only for the PDF."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('At least 8 files', () => pm.expect((j.files || []).length).to.be.at.least(8));",
+                      "pm.test('Every file has id, name, type, sizeBytes, available, tooLarge, canPreview', () => (j.files || []).forEach(f =>",
+                      "    ['id', 'name', 'type', 'sizeBytes', 'description', 'attachedDate', 'folderId', 'available', 'tooLarge', 'canPreview'].forEach(k => pm.expect(f).to.have.property(k))));",
+                      "pm.test('No local paths in names', () => (j.files || []).forEach(f => pm.expect(f.name).to.not.match(/[\\\\\\/]/)));",
+                      "pm.test('Folders on this page', () => pm.expect((j.folders || []).length).to.be.above(0));",
+                      "pm.test('nextPageToken empty', () => pm.expect(j.nextPageToken).to.eql(''));",
+                      "",
+                      "console.log((j.folders || []).length + ' folders, ' + (j.files || []).length + ' files, nextPageToken: ' + (j.nextPageToken || '(none)'));",
+                      "",
+                      "const byId = {}; (pm.response.json().files || []).forEach(f => byId[f.id] = f);",
+                      "pm.test('PDF: canPreview true', () => pm.expect(byId[pm.collectionVariables.get('file_id_pdf')].canPreview).to.eql(true));",
+                      "['file_id_docx', 'file_id_eml', 'file_id_msg'].forEach(v => pm.test(v + ': canPreview false', () => pm.expect(byId[pm.collectionVariables.get(v)].canPreview).to.eql(false)));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.2 Get link: preview the PDF",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_pdf}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Saved in preview_url. Writes a Log__c row (PREVIEWED)."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('Link points back at this API', () => pm.expect(j.url).to.match(new RegExp('^' + pm.environment.get('base_url').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '/download/[a-f0-9]{64}$')));",
+                      "if (j.url) { pm.collectionVariables.set('preview_url', j.url); console.log('preview_url = ' + j.url); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.3 Open the preview link",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{preview_url}}",
+                "description": "PDF inline (Postman shows it in the body). Paste {{preview_url}} into a browser to see the real preview."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('Inline PDF', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf');",
+                      "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('inline');",
+                      "});",
+                      "pm.test('Security headers', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include('frame-ancestors');",
+                      "    pm.expect(pm.response.headers.get('X-Content-Type-Options')).to.eql('nosniff');",
+                      "    pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store');",
+                      "    pm.expect(pm.response.headers.get('Referrer-Policy')).to.eql('no-referrer');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.4 Open the preview link again (still works)",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{preview_url}}",
+                "description": "A preview link can be reopened until it expires (5 minutes)."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.5 Get link: download the same PDF",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_pdf}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Saved in download_url. Writes a Log__c row (DOWNLOADED)."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('Link points back at this API', () => pm.expect(j.url).to.match(new RegExp('^' + pm.environment.get('base_url').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '/download/[a-f0-9]{64}$')));",
+                      "if (j.url) { pm.collectionVariables.set('download_url', j.url); console.log('download_url = ' + j.url); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.6 Open the download link",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{download_url}}",
+                "description": "The same PDF as an attachment (Send and Download to save it). Browser instead: skip this request and paste {{download_url}} (collection variables) into the browser."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('Attachment, application/pdf', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf');",
+                      "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment');",
+                      "});",
+                      "pm.test('Never framed', () => pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include(\"frame-ancestors 'none'\"));",
+                      "pm.test('Saved name .pdf', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/filename=\"[^\"]*\\.pdf\"/));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.7 Open the download link again (404)",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{download_url}}",
+                "description": "A download link works once."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.8.a Get link: preview the same PDF from the Policy record",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_policy_id}}\",\n    \"type\": \"Policy\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_pdf}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Saved in preview_url. Writes a Log__c row (PREVIEWED)."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('Link points back at this API', () => pm.expect(j.url).to.match(new RegExp('^' + pm.environment.get('base_url').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '/download/[a-f0-9]{64}$')));",
+                      "if (j.url) { pm.collectionVariables.set('preview_url', j.url); console.log('preview_url = ' + j.url); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "1.8.b Open the preview link",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{preview_url}}",
+                "description": "Inline PDF with the security headers. Browser instead: skip this request and paste {{preview_url}} (collection variables) into the browser."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('Inline PDF', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf');",
+                      "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('inline');",
+                      "});",
+                      "pm.test('Security headers', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include('frame-ancestors');",
+                      "    pm.expect(pm.response.headers.get('X-Content-Type-Options')).to.eql('nosniff');",
+                      "    pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store');",
+                      "    pm.expect(pm.response.headers.get('Referrer-Policy')).to.eql('no-referrer');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "2 Files that can't be previewed: download only",
+          "description": "Word, e-mails (.eml, .msg) and every other type that isn't PDF or an image. Preview is refused (REFUSED, the component never offers it because canPreview is false); download works.",
+          "item": [
+            {
+              "name": "2.1 Preview a Word file (REFUSED)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_docx}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Only PDF and images can be previewed. No link, no Log__c row."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode REFUSED', () => pm.expect(pm.response.json().resultCode).to.eql('REFUSED'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.2 Get link: download the Word file",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_docx}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Saved in download_url."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('Link points back at this API', () => pm.expect(j.url).to.match(new RegExp('^' + pm.environment.get('base_url').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '/download/[a-f0-9]{64}$')));",
+                      "if (j.url) { pm.collectionVariables.set('download_url', j.url); console.log('download_url = ' + j.url); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.3 Open it: Word attachment",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{download_url}}",
+                "description": "Test Proposal.notify.docx. Browser instead: skip this request and paste {{download_url}} (collection variables) into the browser."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('Attachment, wordprocessingml', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('wordprocessingml');",
+                      "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment');",
+                      "});",
+                      "pm.test('Never framed', () => pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include(\"frame-ancestors 'none'\"));",
+                      "pm.test('Saved name .docx', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/filename=\"[^\"]*\\.docx\"/));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.4 Preview an e-mail, .eml (REFUSED)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_eml}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "E-mails are download only (about 24% of Applied files)."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode REFUSED', () => pm.expect(pm.response.json().resultCode).to.eql('REFUSED'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.5 Get link: download the .eml",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_eml}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Applied names this file without .eml; the extension is a separate field."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('Link points back at this API', () => pm.expect(j.url).to.match(new RegExp('^' + pm.environment.get('base_url').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '/download/[a-f0-9]{64}$')));",
+                      "if (j.url) { pm.collectionVariables.set('download_url', j.url); console.log('download_url = ' + j.url); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.6 Open it: saved name ends in .eml",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{download_url}}",
+                "description": "MuleSoft adds the missing extension. Browser instead: skip this request and paste {{download_url}} (collection variables) into the browser."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('Attachment, message/rfc822', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('message/rfc822');",
+                      "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment');",
+                      "});",
+                      "pm.test('Never framed', () => pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include(\"frame-ancestors 'none'\"));",
+                      "pm.test('Saved name .eml', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/filename=\"[^\"]*\\.eml\"/));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.7 Preview an Outlook e-mail, .msg (REFUSED)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_msg}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Outlook's own format; no browser can show it."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode REFUSED', () => pm.expect(pm.response.json().resultCode).to.eql('REFUSED'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.8 Get link: download the .msg",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_msg}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Saved in download_url."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('Link points back at this API', () => pm.expect(j.url).to.match(new RegExp('^' + pm.environment.get('base_url').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '/download/[a-f0-9]{64}$')));",
+                      "if (j.url) { pm.collectionVariables.set('download_url', j.url); console.log('download_url = ' + j.url); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "2.9 Open it: Outlook attachment",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": "{{download_url}}",
+                "description": "Opens in Outlook once saved. Browser instead: skip this request and paste {{download_url}} (collection variables) into the browser."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('Attachment, application/vnd.ms-outlook', () => {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/vnd.ms-outlook');",
+                      "    pm.expect(pm.response.headers.get('Content-Disposition')).to.include('attachment');",
+                      "});",
+                      "pm.test('Never framed', () => pm.expect(pm.response.headers.get('Content-Security-Policy')).to.include(\"frame-ancestors 'none'\"));",
+                      "pm.test('Saved name .msg', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/filename=\"[^\"]*\\.msg\"/));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "3 Files Applied sends without a download link",
+          "description": "93% of 300 random files in the Applied sandbox come back with an empty download link (file.url), at any size. Applied still reports them as OK, so the list shows them as available and offers Preview on PDFs. We only find out at Get link: the answer must be NOT_AVAILABLE (\"This file could not be opened. Try again\"), with no link and no Log__c row.\n\nThe test client for this folder has 35 files and none of them has a link.",
+          "item": [
+            {
+              "name": "3.1 List a client whose files have no link",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_small_nourl_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Shows the problem: every file looks available and the PDFs say canPreview true, although none can be opened."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('At least 35 files', () => pm.expect((j.files || []).length).to.be.at.least(35));",
+                      "pm.test('Every file has id, name, type, sizeBytes, available, tooLarge, canPreview', () => (j.files || []).forEach(f =>",
+                      "    ['id', 'name', 'type', 'sizeBytes', 'description', 'attachedDate', 'folderId', 'available', 'tooLarge', 'canPreview'].forEach(k => pm.expect(f).to.have.property(k))));",
+                      "pm.test('No local paths in names', () => (j.files || []).forEach(f => pm.expect(f.name).to.not.match(/[\\\\\\/]/)));",
+                      "pm.test('Folders on this page', () => pm.expect((j.folders || []).length).to.be.above(0));",
+                      "pm.test('nextPageToken empty', () => pm.expect(j.nextPageToken).to.eql(''));",
+                      "",
+                      "console.log((j.folders || []).length + ' folders, ' + (j.files || []).length + ' files, nextPageToken: ' + (j.nextPageToken || '(none)'));",
+                      "",
+                      "const f = pm.response.json().files || [];",
+                      "pm.test('Applied reports every file as available', () => f.forEach(x => pm.expect(x.available).to.eql(true)));",
+                      "pm.test('PDFs say canPreview true', () => pm.expect(f.filter(x => x.type === 'pdf' && x.canPreview).length).to.be.above(0));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "3.2 Preview a 3 MB PDF (NOT_AVAILABLE)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_small_nourl_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_small_nourl}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "No link is handed out and no Log__c row is written. Applied sends no link for this file."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_AVAILABLE', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_AVAILABLE'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "3.3 Download the same 3 MB PDF (NOT_AVAILABLE)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_small_nourl_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_small_nourl}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "No link is handed out and no Log__c row is written. Download has the same problem: there is nothing to stream."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_AVAILABLE', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_AVAILABLE'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "3.4 Preview a 52 MB PDF (NOT_AVAILABLE)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_large_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_large}}\",\n    \"mode\": \"preview\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "No link is handed out and no Log__c row is written. Large file, same answer: size is not the cause."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_AVAILABLE', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_AVAILABLE'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "3.5 Download the 52 MB PDF (NOT_AVAILABLE)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_large_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_large}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "No link is handed out and no Log__c row is written. "
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_AVAILABLE', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_AVAILABLE'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "4 Access checks and bad requests",
+          "item": [
+            {
+              "name": "4.1 File from another client (REFUSED)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_large}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "The file exists in Applied but is not on this client. A user can't reach another client's files by changing the file id."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode REFUSED', () => pm.expect(pm.response.json().resultCode).to.eql('REFUSED'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "4.2 File not on this policy (REFUSED)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_policy_id}}\",\n    \"type\": \"Policy\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_large}}\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "Same check on a Policy record."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode REFUSED', () => pm.expect(pm.response.json().resultCode).to.eql('REFUSED'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "4.3 Unknown file (NOT_FOUND)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"00000000-0000-0000-0000-000000000000\",\n    \"mode\": \"download\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "A file id Applied doesn't know."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_FOUND', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_FOUND'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "4.4 Invalid mode (400)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"fileId\": \"{{file_id_pdf}}\",\n    \"mode\": \"edit\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/link",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "link"
+                  ]
+                },
+                "description": "mode must be preview or download."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "4.5 No client_id / client_secret headers (400 locally, 401 on CloudHub)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Locally the API spec rejects it (400). On CloudHub, Client ID Enforcement answers 401."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Refused (400 or 401)', () => pm.expect(pm.response.code).to.be.oneOf([400, 401]));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "4.6 Unknown download token (404)",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/download/0000000000000000000000000000000000000000000000000000000000000000",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "download",
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                  ]
+                },
+                "description": "A well-formed token nobody issued."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "4.7 Malformed download token (400)",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/download/abc",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "download",
+                    "abc"
+                  ]
+                },
+                "description": "Tokens are 64 hex characters."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "5 List: records and paging",
+          "item": [
+            {
+              "name": "5.1 Policy (files attached to one Epic policy)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_policy_id}}\",\n    \"type\": \"Policy\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Same list, filtered on an Epic policy instead of a client."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('At least 1 files', () => pm.expect((j.files || []).length).to.be.at.least(1));",
+                      "pm.test('Every file has id, name, type, sizeBytes, available, tooLarge, canPreview', () => (j.files || []).forEach(f =>",
+                      "    ['id', 'name', 'type', 'sizeBytes', 'description', 'attachedDate', 'folderId', 'available', 'tooLarge', 'canPreview'].forEach(k => pm.expect(f).to.have.property(k))));",
+                      "pm.test('No local paths in names', () => (j.files || []).forEach(f => pm.expect(f.name).to.not.match(/[\\\\\\/]/)));",
+                      "pm.test('Folders on this page', () => pm.expect((j.folders || []).length).to.be.above(0));",
+                      "pm.test('nextPageToken empty', () => pm.expect(j.nextPageToken).to.eql(''));",
+                      "",
+                      "console.log((j.folders || []).length + ' folders, ' + (j.files || []).length + ' files, nextPageToken: ' + (j.nextPageToken || '(none)'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.2 Unknown Opportunity (NOT_FOUND)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_unknown_id}}\",\n    \"type\": \"Opportunity\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "The Applied sandbox has no opportunities, so only the not-found path can be tested."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_FOUND', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_FOUND'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.3 Paging: page 1 of a client with 120 files",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_paging_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "50 files per page. Saves nextPageToken in page_token."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('At least 50 files', () => pm.expect((j.files || []).length).to.be.at.least(50));",
+                      "pm.test('Every file has id, name, type, sizeBytes, available, tooLarge, canPreview', () => (j.files || []).forEach(f =>",
+                      "    ['id', 'name', 'type', 'sizeBytes', 'description', 'attachedDate', 'folderId', 'available', 'tooLarge', 'canPreview'].forEach(k => pm.expect(f).to.have.property(k))));",
+                      "pm.test('No local paths in names', () => (j.files || []).forEach(f => pm.expect(f.name).to.not.match(/[\\\\\\/]/)));",
+                      "pm.test('Folders on this page', () => pm.expect((j.folders || []).length).to.be.above(0));",
+                      "pm.test('nextPageToken set', () => pm.expect(j.nextPageToken).to.not.be.empty);",
+                      "pm.collectionVariables.set('page_token', j.nextPageToken);",
+                      "console.log((j.folders || []).length + ' folders, ' + (j.files || []).length + ' files, nextPageToken: ' + (j.nextPageToken || '(none)'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.4 Paging: page 2",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_paging_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"{{page_token}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Folders come on page 1 only."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('At least 50 files', () => pm.expect((j.files || []).length).to.be.at.least(50));",
+                      "pm.test('Every file has id, name, type, sizeBytes, available, tooLarge, canPreview', () => (j.files || []).forEach(f =>",
+                      "    ['id', 'name', 'type', 'sizeBytes', 'description', 'attachedDate', 'folderId', 'available', 'tooLarge', 'canPreview'].forEach(k => pm.expect(f).to.have.property(k))));",
+                      "pm.test('No local paths in names', () => (j.files || []).forEach(f => pm.expect(f.name).to.not.match(/[\\\\\\/]/)));",
+                      "pm.test('No folders after page 1', () => pm.expect((j.folders || []).length).to.eql(0));",
+                      "pm.test('nextPageToken set', () => pm.expect(j.nextPageToken).to.not.be.empty);",
+                      "pm.collectionVariables.set('page_token', j.nextPageToken);",
+                      "console.log((j.folders || []).length + ' folders, ' + (j.files || []).length + ' files, nextPageToken: ' + (j.nextPageToken || '(none)'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.5 Paging: page 3 (last)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_paging_client_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"{{page_token}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Last page: nextPageToken is empty."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "const j = pm.response.json();",
+                      "pm.test('resultCode OK', () => pm.expect(j.resultCode).to.eql('OK'));",
+                      "pm.test('At least 1 files', () => pm.expect((j.files || []).length).to.be.at.least(1));",
+                      "pm.test('Every file has id, name, type, sizeBytes, available, tooLarge, canPreview', () => (j.files || []).forEach(f =>",
+                      "    ['id', 'name', 'type', 'sizeBytes', 'description', 'attachedDate', 'folderId', 'available', 'tooLarge', 'canPreview'].forEach(k => pm.expect(f).to.have.property(k))));",
+                      "pm.test('No local paths in names', () => (j.files || []).forEach(f => pm.expect(f.name).to.not.match(/[\\\\\\/]/)));",
+                      "pm.test('No folders after page 1', () => pm.expect((j.folders || []).length).to.eql(0));",
+                      "pm.test('nextPageToken empty', () => pm.expect(j.nextPageToken).to.eql(''));",
+                      "",
+                      "console.log((j.folders || []).length + ' folders, ' + (j.files || []).length + ' files, nextPageToken: ' + (j.nextPageToken || '(none)'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.6 Unknown Epic client (NOT_FOUND)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_unknown_id}}\",\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Applied answers an empty list for a client it doesn't know, so MuleSoft looks the client up and answers NOT_FOUND ('Not found in Applied Epic')."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_FOUND', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_FOUND'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.7 Unknown Epic policy (NOT_FOUND)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_unknown_id}}\",\n    \"type\": \"Policy\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Same check for a policy."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                      "pm.test('resultCode NOT_FOUND', () => pm.expect(pm.response.json().resultCode).to.eql('NOT_FOUND'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.8 Type not supported (400)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"epicId\": \"{{epic_client_id}}\",\n    \"type\": \"Lead\",\n    \"sfRecordId\": \"{{sf_record_id}}\",\n    \"pageToken\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "The API spec only allows Client, Opportunity, Policy."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "5.9 Missing epicId (400)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "client_id",
+                    "value": "{{client_id}}"
+                  },
+                  {
+                    "key": "client_secret",
+                    "value": "{{client_secret}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-SF-User-Id",
+                    "value": "{{sf_user_id}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n    \"type\": \"Client\",\n    \"sfRecordId\": \"{{sf_record_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/files/list",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "files",
+                    "list"
+                  ]
+                },
+                "description": "Required by the API spec."
+              },
+              "protocolProfileBehavior": {
+                "strictSSL": false
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "epic_client_id",
+      "value": "61e1d77b-4d9c-4607-97a6-e675fadd6461"
+    },
+    {
+      "key": "epic_policy_id",
+      "value": "3783330e-b69a-4ac5-82f5-4369fd14daf3"
+    },
+    {
+      "key": "epic_paging_client_id",
+      "value": "854998bd-e3e4-4fef-8b28-5e31b6858790"
+    },
+    {
+      "key": "epic_large_client_id",
+      "value": "ecc54436-154f-464a-9bca-741757a03364"
+    },
+    {
+      "key": "epic_small_nourl_client_id",
+      "value": "56f46e4d-b691-42bf-9ac3-525f228f73ab"
+    },
+    {
+      "key": "epic_unknown_id",
+      "value": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "key": "file_id_pdf",
+      "value": "4c35ee9c-9dc2-4a32-b8b6-be2a1f6728de"
+    },
+    {
+      "key": "file_id_docx",
+      "value": "e58333ad-5c2c-4530-a622-9b8b2587a759"
+    },
+    {
+      "key": "file_id_eml",
+      "value": "e1e06aa9-2c36-4247-b936-d282d3520da4"
+    },
+    {
+      "key": "file_id_msg",
+      "value": "2aba6f13-0546-447c-9e08-52554c516438"
+    },
+    {
+      "key": "file_id_large",
+      "value": "246b46f1-1dff-46a2-ac9e-6ecbd1a757ca"
+    },
+    {
+      "key": "file_id_small_nourl",
+      "value": "abf8d8ef-18ef-4c8e-a28a-9359abce5a92"
+    },
+    {
+      "key": "page_token",
+      "value": ""
+    },
+    {
+      "key": "preview_url",
+      "value": ""
+    },
+    {
+      "key": "download_url",
+      "value": ""
+    }
+  ]
+}

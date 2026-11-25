@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd ">
-    <apikit:config name="yp-integration-api-config" api="resource::fd64dbb6-4a14-442f-a8f2-0dfba976974e:yp-integration-api:1.0.0:raml:zip:yp-integration-api.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
+    <apikit:config name="yp-integration-api-config" api="resource::fd64dbb6-4a14-442f-a8f2-0dfba976974e:yp-integration-api:1.1.3:raml:zip:yp-integration-api.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
     <flow name="yp-integration-api-main">
         <http:listener config-ref="yp-integration-api-httpListenerConfig" path="/api/*">
             <http:response statusCode="#[vars.httpStatus default 200]">
@@ -44,16 +44,64 @@ output application/json
     </flow>
     <flow name="post:\connection-test:application\json:yp-integration-api-config">
         <logger level="INFO" doc:name="Log request" message="#['connection-test request: ' ++ write(payload, 'application/json', {indent: false})]" />
-        <salesforce:query doc:name="Read integration user" config-ref="Salesforce_Config">
-            <salesforce:salesforce-query><![CDATA[SELECT Id, Name, Username FROM User WHERE Username = ':username' LIMIT 1]]></salesforce:salesforce-query>
-            <salesforce:parameters><![CDATA[#[{ username: p('salesforce.principal') }]]]></salesforce:parameters>
-        </salesforce:query>
-        <logger level="INFO" doc:name="Log Salesforce result" message="#['Salesforce query result: ' ++ write(payload, 'application/json', {indent: false})]" />
+        <ee:transform doc:name="Set Salesforce Request (integration user)">
+            <ee:variables>
+                <ee:set-variable variableName="salesforceRequest"><![CDATA[%dw 2.0
+output application/java
+---
+{ soql: "SELECT Id, Name, Username FROM User WHERE Username = ':username' LIMIT 1", parameters: { username: p('salesforce.principal') } }]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <flow-ref doc:name="Read integration user" name="salesforce-query" target="salesforceUsers" />
+        <logger level="INFO" doc:name="Log Salesforce result" message="#['Salesforce query result: ' ++ write(vars.salesforceUsers, 'application/json', {indent: false})]" />
+        <try doc:name="Applied Epic leg">
+            <ee:transform doc:name="Set Applied Request (one client)">
+                <ee:variables>
+                    <ee:set-variable variableName="appliedRequest"><![CDATA[%dw 2.0
+output application/java
+---
+{ method: "GET", path: "/epic/client/v1/clients", query: { limit: "1" } }]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+            <flow-ref doc:name="Applied request" name="applied-request" />
+            <ee:transform doc:name="Set Applied Result">
+                <ee:variables>
+                    <ee:set-variable variableName="appliedResult"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  status: "CONNECTED",
+  httpStatus: attributes.statusCode,
+  detail: "Token obtained and GET /epic/client/v1/clients?limit=1 succeeded",
+  response: payload
+}]]></ee:set-variable>
+                </ee:variables>
+            </ee:transform>
+            <error-handler>
+                <on-error-continue type="ANY" logException="true" doc:name="Report the failure">
+                    <ee:transform doc:name="Set Applied Failure Result">
+                        <ee:variables>
+                            <ee:set-variable variableName="appliedResult"><![CDATA[%dw 2.0
+import try from dw::Runtime
+output application/java
+var body = try(() -> error.errorMessage.payload as Object)
+---
+{
+  status: "FAILED",
+  httpStatus: error.errorMessage.attributes.statusCode default null,
+  detail: error.description,
+  response: if (body.success) body.result else null
+}]]></ee:set-variable>
+                        </ee:variables>
+                    </ee:transform>
+                </on-error-continue>
+            </error-handler>
+        </try>
         <ee:transform doc:name="Connection test response">
             <ee:message>
                 <ee:set-payload><![CDATA[%dw 2.0
 output application/json
-var user = payload[0]
+var user = vars.salesforceUsers[0]
 ---
 {
   correlationId: correlationId,
@@ -64,12 +112,18 @@ var user = payload[0]
     username: user.Username,
     detail: if (user != null) "Read User " ++ user.Id ++ " as the integration user" else "Query returned no rows"
   },
-  appliedEpic: {
-    status: "NOT_CONFIGURED",
-    detail: "Blocked until Applied Epic issues the Third-Party Consultant designation (PAN:10404 AC6)."
-  }
+  appliedEpic: vars.appliedResult
 }]]></ee:set-payload>
             </ee:message>
         </ee:transform>
+    </flow>
+    <flow name="get:\download\(token):yp-integration-api-config">
+        <flow-ref doc:name="Stream file" name="epic-files-download" />
+    </flow>
+    <flow name="post:\files\link:application\json:yp-integration-api-config">
+        <flow-ref doc:name="Get file link" name="epic-files-link" />
+    </flow>
+    <flow name="post:\files\list:application\json:yp-integration-api-config">
+        <flow-ref doc:name="List files" name="epic-files-list" />
     </flow>
 </mule>

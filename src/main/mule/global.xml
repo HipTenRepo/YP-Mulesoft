@@ -3,12 +3,14 @@
 	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
 	xmlns:api-gateway="http://www.mulesoft.org/schema/mule/api-gateway"
 	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:os="http://www.mulesoft.org/schema/mule/os"
 	xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
 	xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties"
 	xmlns:tls="http://www.mulesoft.org/schema/mule/tls"
 	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
 http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
 http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
 http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd
 http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd
@@ -47,6 +49,23 @@ http://www.mulesoft.org/schema/mule/api-gateway http://www.mulesoft.org/schema/m
 			tokenEndpoint="${salesforce.tokenEndpoint}"
 			audienceUrl="${salesforce.audienceUrl}" />
 	</salesforce:sfdc-config>
+
+	<!-- Applied Epic: one HTTPS connection pool for the token endpoint and all API calls (applied-client.xml). -->
+	<http:request-config name="Applied_HTTP_Config" doc:name="Applied HTTP Request config" responseTimeout="${applied.responseTimeout}">
+		<http:request-connection protocol="HTTPS" host="${applied.host}" port="443" connectionIdleTimeout="30000" />
+	</http:request-config>
+
+	<!-- Applied Epic access token cache (in memory, per replica). -->
+	<os:object-store name="Applied_Token_Store" doc:name="Applied token store" persistent="false" maxEntries="10" />
+
+	<!-- Applied Epic files (epic-files.xml). Link tokens: one entry per link, gone after files.linkTtlMinutes. Persistent so every CloudHub replica sees it. -->
+	<os:object-store name="Epic_Files_Link_Store" doc:name="Epic files link store" persistent="true"
+		entryTtl="${files.linkTtlMinutes}" entryTtlUnit="MINUTES" expirationInterval="1" expirationIntervalUnit="MINUTES" />
+
+	<!-- Signed file URLs from Applied Epic (Google Cloud Storage). The host comes from each URL. -->
+	<http:request-config name="Epic_Files_Storage_HTTP_Config" doc:name="Epic files storage HTTP config" responseTimeout="${files.storageTimeoutMs}">
+		<http:request-connection protocol="HTTPS" connectionIdleTimeout="30000" />
+	</http:request-config>
 
 	<!-- Registers the app with its API Manager instance (api.id per environment); policies such as Client ID Enforcement are applied from there. -->
 	<api-gateway:autodiscovery apiId="${api.id}" doc:name="API Autodiscovery" flowRef="yp-integration-api-main" />
