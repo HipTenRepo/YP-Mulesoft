@@ -127,6 +127,8 @@ Stories PAN:29554 (feature), 29615 (Apex), 29617 (component), 29619 (this API).
 | `previewTypes` | Extensions that can be previewed: `pdf,png,jpg,jpeg,gif` |
 | `storageTimeoutMs` | Timeout for the file storage request (60 s) |
 
+**Postman** (`postman/`): `yp-integration.postman_collection.json` covers every files case in order (supported files, download-only types, files without a download link, access checks, list and paging) plus health and the connection test. Environments: `local`, `sandbox-htdev1` and `sandbox-uat` (same Sandbox app, different Salesforce record Ids for the audit row). Fill in `client_id` / `client_secret` (the "Salesforce UAT" client app; ask Stefan) in Postman, never in the files. Locally any value works. The Applied Epic test Ids are collection variables; `docs/applied-epic-files.md` in the YP-Salesforce repo explains them.
+
 ## What Salesforce does differently for the integration user
 
 The integration user holds the custom permission `Bypass_Automation`, so it skips most Opportunity automation: 27 flows check it in their entry condition, and Erie / Ramsey check it at the start of each path. The 8 flows that keep data correct still run for it.
