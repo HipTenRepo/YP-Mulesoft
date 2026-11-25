@@ -166,8 +166,10 @@ output application/json
 import filterParam from modules::epicFiles
 output application/java
 var userId = attributes.headers['x-sf-user-id'] default ""
-// The link points back at the host Salesforce called (CloudHub URL, or localhost when run locally).
-var host = attributes.headers.host default ""
+// The link points back at the host Salesforce called. On CloudHub the ingress passes the public name in
+// X-Forwarded-Host (Host is the internal service name); locally Host is localhost:8081.
+var forwardedHost = trim(((attributes.headers['x-forwarded-host'] default "") splitBy ",")[0] default "")
+var host = if (isBlank(forwardedHost)) (attributes.headers.host default "") else forwardedHost
 var basePath = (attributes.listenerPath default "/api/*") replace /\/\*$/ with ""
 ---
 {
