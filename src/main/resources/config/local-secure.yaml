@@ -8,3 +8,8 @@ https:
   keystore:
     password: "![K7EbAy1fvmqAOx8zVkousWiGrRhcSQ1rNxkdvBvLtbcUbwIVNHIOt8trNDNfVghy]"
     keyPassword: "![K7EbAy1fvmqAOx8zVkousWiGrRhcSQ1rNxkdvBvLtbcUbwIVNHIOt8trNDNfVghy]"
+
+# Applied Epic DevCenter app credentials (Client ID = API key, Client Secret).
+applied:
+  clientId: "![otPG2zuGw1pmVgIQ4E70TvmyFnKSI61eSQk85aVIX9f0H5mF0ZCgXRsEvLq7v7/I+ePO09cOkBh1rCkk7EPD4w==]"
+  clientSecret: "![H8rUn746J7BxJSqbj8Re539Q95kl+emrLDnaG6amuIpUxxGkeIomVrHQ/0p/DZ9naFMaSdlFo75ZsKMTH94JmYVXQSQtwr+Z0QuLn0l4XNOps9jEQOX1jLuCkX8uP/LC]"

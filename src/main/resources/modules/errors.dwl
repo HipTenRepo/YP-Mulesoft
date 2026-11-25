@@ -12,18 +12,22 @@ var errorTable = {
 
 var fallback = { status: 500, code: "INTERNAL_ERROR", exposeDescription: false }
 
+// HTTP:* errors come from outbound calls (Applied Epic), so the caller gets 502.
+var upstream = { status: 502, code: "UPSTREAM_ERROR", exposeDescription: false }
+
 var defaultMessages = {
     "404": "Resource not found.",
     "405": "Method not allowed.",
     "406": "Not acceptable.",
     "415": "Unsupported media type.",
     "500": "Unexpected error. Quote the correlation id when reporting it.",
+    "502": "A downstream system (Applied Epic) returned an error. Quote the correlation id when reporting it.",
     "501": "Not implemented."
 }
 
 fun errorKey(err) = (err.errorType.namespace default "") ++ ":" ++ (err.errorType.identifier default "")
 
-fun errorEntry(err) = errorTable[errorKey(err)] default fallback
+fun errorEntry(err) = errorTable[errorKey(err)] default (if (err.errorType.namespace == "HTTP") upstream else fallback)
 
 fun errorStatus(err) = errorEntry(err).status
 

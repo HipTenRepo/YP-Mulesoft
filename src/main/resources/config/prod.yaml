@@ -24,3 +24,22 @@ salesforce:
 # API Manager instance this app registers with (autodiscovery). Policies such as Client ID Enforcement are applied there.
 api:
   id: "TODO-prod-api-instance-id"
+
+# Applied Epic production (not set up yet). Key and secret in prod-secure.yaml.
+applied:
+  host: "api.myappliedproducts.com"
+  tokenPath: "/v1/auth/connect/token"
+  audience: "api.myappliedproducts.com/epic"
+  responseTimeout: "30000"
+
+# Applied Epic files (epic-files.xml). Links point back at the host Salesforce called, so no public URL is configured.
+# frameAncestors = the Lightning domains of YPProd, the only pages allowed to frame a preview. Update after a sandbox refresh.
+files:
+  frameAncestors: "https://your-policy.lightning.force.com https://your-policy.my.salesforce.com"
+  linkTtlMinutes: "5"
+  pageSize: "50"
+  folderPageSize: "100"
+  # Preview size limit in bytes; 0 = no limit. The limit (5 MB proposed) waits for Your Policy's sign-off.
+  previewMaxBytes: "0"
+  previewTypes: "pdf,png,jpg,jpeg,gif"
+  storageTimeoutMs: "60000"

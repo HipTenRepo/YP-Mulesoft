@@ -8,3 +8,8 @@ https:
   keystore:
     password: "TODO-encrypt"
     keyPassword: "TODO-encrypt"
+
+# Applied Epic DevCenter app credentials (Client ID = API key, Client Secret).
+applied:
+  clientId: "TODO-encrypt"
+  clientSecret: "TODO-encrypt"

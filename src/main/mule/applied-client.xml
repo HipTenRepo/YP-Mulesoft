@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:os="http://www.mulesoft.org/schema/mule/os"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+
+	<!-- Applied Epic repository. Every Applied call goes through applied-request.
+	     Caller sets vars.appliedRequest = { method, path, query?, headers?, body? } and gets the Applied response as payload.
+	     The token is cached until 5 minutes before it expires; a 401 refreshes it and retries the call once. -->
+
+	<sub-flow name="applied-request">
+		<flow-ref doc:name="Get token" name="applied-get-token" />
+		<try doc:name="Call, retry once on 401">
+			<flow-ref doc:name="Send" name="applied-send" />
+			<error-handler>
+				<on-error-continue type="HTTP:UNAUTHORIZED" logException="false" doc:name="401: new token, retry once">
+					<logger level="WARN" doc:name="Log retry" message="#['Applied returned 401 on ' ++ (vars.appliedRequest.path default '') ++ ', refreshing the token and retrying once']" />
+					<ee:transform doc:name="Set Force Token Refresh">
+						<ee:variables>
+							<ee:set-variable variableName="appliedForceRefresh"><![CDATA[%dw 2.0
+output application/java
+---
+true]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<flow-ref doc:name="Get new token" name="applied-get-token" />
+					<flow-ref doc:name="Send again" name="applied-send" />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+
+	<!-- The one HTTP request element for Applied API calls. Errors (4xx/5xx) propagate as HTTP:* error types. -->
+	<sub-flow name="applied-send">
+		<http:request doc:name="Applied API" config-ref="Applied_HTTP_Config"
+			method="#[vars.appliedRequest.method default 'GET']"
+			path="#[vars.appliedRequest.path]"
+			outputMimeType="application/json">
+			<http:body><![CDATA[#[if (vars.appliedRequest.body == null) null else write(vars.appliedRequest.body, "application/json")]]]></http:body>
+			<http:headers><![CDATA[#[{ Authorization: "Bearer " ++ vars.appliedToken, ("Content-Type": "application/json") if (vars.appliedRequest.body != null) } ++ (vars.appliedRequest.headers default {})]]]></http:headers>
+			<http:query-params><![CDATA[#[vars.appliedRequest.query default {}]]]></http:query-params>
+		</http:request>
+	</sub-flow>
+
+	<!-- Sets vars.appliedToken. Uses the cached token unless it is missing, about to expire, or vars.appliedForceRefresh is true. -->
+	<sub-flow name="applied-get-token">
+		<os:retrieve doc:name="Cached token" key="token" objectStore="Applied_Token_Store" target="appliedTokenEntry">
+			<os:default-value><![CDATA[#[{}]]]></os:default-value>
+		</os:retrieve>
+		<choice doc:name="Need a new token?">
+			<when expression="#[(vars.appliedForceRefresh default false) or vars.appliedTokenEntry.accessToken == null or ((vars.appliedTokenEntry.expiresAt default 0) &lt;= (now() as Number))]">
+				<http:request doc:name="Token" config-ref="Applied_HTTP_Config" method="POST" path="${applied.tokenPath}" target="appliedTokenResponse" outputMimeType="application/json">
+					<http:body><![CDATA[#[output application/x-www-form-urlencoded --- { grant_type: "client_credentials", audience: p('applied.audience') }]]]></http:body>
+					<http:headers><![CDATA[#[%dw 2.0
+import toBase64 from dw::core::Binaries
+output application/java
+---
+{ Authorization: "Basic " ++ toBase64((p('secure::applied.clientId') ++ ":" ++ p('secure::applied.clientSecret')) as Binary) }]]]></http:headers>
+				</http:request>
+				<os:store doc:name="Cache token" key="token" objectStore="Applied_Token_Store">
+					<os:value><![CDATA[#[output application/java --- {
+	accessToken: vars.appliedTokenResponse.access_token,
+	expiresAt: (now() as Number) + ((vars.appliedTokenResponse.expires_in default 7200) as Number) - 300
+}]]]></os:value>
+				</os:store>
+				<ee:transform doc:name="Set Token From Response">
+					<ee:variables>
+						<ee:set-variable variableName="appliedToken"><![CDATA[%dw 2.0
+output application/java
+---
+vars.appliedTokenResponse.access_token]]></ee:set-variable>
+						<ee:set-variable variableName="appliedForceRefresh"><![CDATA[false]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+			</when>
+			<otherwise>
+				<ee:transform doc:name="Set Token From Cache">
+					<ee:variables>
+						<ee:set-variable variableName="appliedToken"><![CDATA[%dw 2.0
+output application/java
+---
+vars.appliedTokenEntry.accessToken]]></ee:set-variable>
+						<ee:set-variable variableName="appliedForceRefresh"><![CDATA[false]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+			</otherwise>
+		</choice>
+	</sub-flow>
+</mule>

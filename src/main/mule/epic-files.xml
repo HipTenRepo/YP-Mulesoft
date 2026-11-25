@@ -1,0 +1,512 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:os="http://www.mulesoft.org/schema/mule/os"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+
+	<!-- Applied Epic files (PAN:29619, story 29554.6.1): list a record's files, hand out a short-lived link, stream the file.
+	     Called by the Salesforce files component (Apex EpicFilesService) through the YP_MuleSoft Named Credential.
+	     Expected outcomes are HTTP 200 with a resultCode: OK, NOT_FOUND, TOO_LARGE, NOT_AVAILABLE, REFUSED, UNAVAILABLE.
+	     The API routes in yp-integration-api.xml flow-ref these: POST /files/list, POST /files/link, GET /download/{token}.
+	     /download is public (no client credentials; Client ID Enforcement excludes it), the token is its only lock. -->
+
+	<!-- ============================================================ POST /files/list -->
+
+	<!-- In: { epicId, type (Client | Opportunity | Policy), sfRecordId, pageToken }.
+	     Out: { resultCode, folders [id, name, parentId], files [id, name, type, sizeBytes, description, attachedDate, folderId, available, tooLarge, canPreview], nextPageToken }.
+	     Folders come on the first page only. pageToken is the Applied offset of the next page; blank on the last page.
+	     A record Applied Epic doesn't know: NOT_FOUND. -->
+	<sub-flow name="epic-files-list">
+		<ee:transform doc:name="Set List Request">
+			<ee:variables>
+				<ee:set-variable variableName="filesRequest"><![CDATA[%dw 2.0
+import filterParam from modules::epicFiles
+output application/java
+var token = payload.pageToken default ""
+var offset = if (token matches /^\d+$/) (token as Number) else 0
+---
+{
+  epicId: payload.epicId,
+  "type": payload."type",
+  sfRecordId: payload.sfRecordId,
+  filterParam: filterParam(payload."type"),
+  offset: offset,
+  limit: p('files.pageSize') as Number
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Valid request?">
+			<when expression="#[isBlank(vars.filesRequest.epicId) or vars.filesRequest.filterParam == null]">
+				<ee:transform doc:name="Set Refused Reply">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ resultCode: "REFUSED", folders: [], files: [], nextPageToken: "" }]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</when>
+			<otherwise>
+				<try doc:name="Read Applied Epic">
+					<choice doc:name="First page?">
+						<when expression="#[vars.filesRequest.offset == 0]">
+							<ee:transform doc:name="Set Folders Request">
+								<ee:variables>
+									<ee:set-variable variableName="appliedRequest"><![CDATA[%dw 2.0
+output application/java
+---
+{ method: "GET", path: "/epic/attachment-folder/v1/attachment-folders", query: { limit: p('files.folderPageSize') } }]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+							<flow-ref doc:name="Get folders" name="applied-request" />
+							<ee:transform doc:name="Set Folders">
+								<ee:variables>
+									<ee:set-variable variableName="folders"><![CDATA[%dw 2.0
+output application/java
+---
+(payload."_embedded".attachmentFolders default []) map {
+  id: $.id,
+  name: $.name,
+  parentId: if ($.parentFolder is Object) ($.parentFolder.id default "") else ($.parentFolder default "")
+}]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+						</when>
+						<otherwise>
+							<ee:transform doc:name="Set No Folders">
+								<ee:variables>
+									<ee:set-variable variableName="folders"><![CDATA[%dw 2.0
+output application/java
+---
+[]]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+						</otherwise>
+					</choice>
+					<ee:transform doc:name="Set Attachments Request">
+						<ee:variables>
+							<ee:set-variable variableName="appliedRequest"><![CDATA[%dw 2.0
+output application/java
+var r = vars.filesRequest
+---
+{
+  method: "GET",
+  path: "/epic/attachment/v2/attachments",
+  query: { (r.filterParam): r.epicId, limit: r.limit as String, offset: r.offset as String }
+}]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<flow-ref doc:name="Get attachments" name="applied-request" />
+					<choice doc:name="No files on page 1?">
+						<when expression="#[vars.filesRequest.offset == 0 and ((payload.total default 0) as Number) == 0]">
+							<!-- Applied answers an empty list for a record it doesn't know. Look the record up: a 404 ends in NOT_FOUND. -->
+							<ee:transform doc:name="Set Record Request">
+								<ee:variables>
+									<ee:set-variable variableName="appliedRequest"><![CDATA[%dw 2.0
+import recordPath from modules::epicFiles
+output application/java
+---
+{ method: "GET", path: recordPath(vars.filesRequest."type", vars.filesRequest.epicId) }]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+							<flow-ref doc:name="Get the Applied Epic record" name="applied-request" target="appliedRecord" />
+						</when>
+					</choice>
+					<ee:transform doc:name="Set List Reply">
+						<ee:message>
+							<ee:set-payload><![CDATA[%dw 2.0
+import toFile from modules::epicFiles
+output application/json
+var r = vars.filesRequest
+var total = (payload.total default 0) as Number
+var nextOffset = r.offset + r.limit
+---
+{
+  resultCode: "OK",
+  folders: vars.folders,
+  files: (payload."_embedded".attachments default []) filter ($.active default true) map toFile($, p('files.previewMaxBytes') as Number, p('files.previewTypes')),
+  nextPageToken: if (nextOffset < total) nextOffset as String else ""
+}]]></ee:set-payload>
+						</ee:message>
+					</ee:transform>
+					<error-handler>
+						<on-error-continue type="ANY" logException="true" doc:name="Applied Epic failed">
+							<ee:transform doc:name="Set List Failure Reply">
+								<ee:message>
+									<ee:set-payload><![CDATA[%dw 2.0
+import failureCode from modules::epicFiles
+output application/json
+---
+{ resultCode: failureCode(error), folders: [], files: [], nextPageToken: "" }]]></ee:set-payload>
+								</ee:message>
+							</ee:transform>
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</otherwise>
+		</choice>
+	</sub-flow>
+
+	<!-- ============================================================ POST /files/link -->
+
+	<!-- In: { epicId, type, sfRecordId, fileId, mode (preview | download) }, header X-SF-User-Id (audit only).
+	     Out: { resultCode, url }. The url is a MuleSoft link: one file, one person, files.linkTtlMinutes.
+	     A download link works once; a preview link can be reused until it expires, so the PDF viewer keeps working.
+	     NOT_AVAILABLE when Applied Epic reports the file unavailable or sends no download URL for it (no link, no audit row). -->
+	<sub-flow name="epic-files-link">
+		<ee:transform doc:name="Set Link Request">
+			<ee:variables>
+				<ee:set-variable variableName="filesRequest"><![CDATA[%dw 2.0
+import filterParam from modules::epicFiles
+output application/java
+var userId = attributes.headers['x-sf-user-id'] default ""
+// The link points back at the host Salesforce called (CloudHub URL, or localhost when run locally).
+var host = attributes.headers.host default ""
+var basePath = (attributes.listenerPath default "/api/*") replace /\/\*$/ with ""
+---
+{
+  epicId: payload.epicId,
+  "type": payload."type",
+  sfRecordId: payload.sfRecordId,
+  fileId: payload.fileId,
+  mode: lower(payload.mode default ""),
+  filterParam: filterParam(payload."type"),
+  sfUserId: if (userId matches /^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$/) userId else "",
+  downloadBaseUrl: if (host matches /^[A-Za-z0-9.\-]+(:[0-9]{1,5})?$/) ("https://" ++ host ++ basePath ++ "/download/") else ""
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Valid request?">
+			<when expression="#[isBlank(vars.filesRequest.epicId) or isBlank(vars.filesRequest.fileId) or isBlank(vars.filesRequest.downloadBaseUrl) or vars.filesRequest.filterParam == null or not (['preview', 'download'] contains vars.filesRequest.mode)]">
+				<ee:transform doc:name="Set Refused Reply">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ resultCode: "REFUSED" }]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</when>
+			<otherwise>
+				<try doc:name="Check the file and make the link">
+					<ee:transform doc:name="Set Attachment Request">
+						<ee:variables>
+							<ee:set-variable variableName="appliedRequest"><![CDATA[%dw 2.0
+output application/java
+---
+{ method: "GET", path: "/epic/attachment/v2/attachments/" ++ vars.filesRequest.fileId }]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<flow-ref doc:name="Get attachment" name="applied-request" />
+					<ee:transform doc:name="Set Link Decision">
+						<ee:variables>
+							<ee:set-variable variableName="linkDecision"><![CDATA[%dw 2.0
+import belongsTo, isPreviewType, isTooLarge, fileName, downloadName from modules::epicFiles
+output application/java
+var r = vars.filesRequest
+var file = payload.file default {}
+var ext = lower((file.extension default "") replace /^\./ with "")
+---
+{
+  resultCode:
+    if (not belongsTo(payload, r."type", r.epicId)) "REFUSED"
+    else if (not (payload.active default true) or file.status != "OK") "NOT_AVAILABLE"
+    else if (isBlank(file.url default "")) "NOT_AVAILABLE"
+    else if (r.mode == "preview" and not isPreviewType(ext, p('files.previewTypes'))) "REFUSED"
+    else if (r.mode == "preview" and isTooLarge((file.size default 0) as Number, p('files.previewMaxBytes') as Number)) "TOO_LARGE"
+    else "OK",
+  name: if (isBlank(fileName(file.name))) ("file." ++ ext) else downloadName(fileName(file.name), ext),
+  extension: ext,
+  sizeBytes: (file.size default 0) as Number,
+  attachedOn: payload.attachedOn default "",
+  folderId: if (payload.folder is Object) (payload.folder.id default "") else (payload.folder default "")
+}]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<choice doc:name="Make a link?">
+						<when expression="#[vars.linkDecision.resultCode == 'OK']">
+							<ee:transform doc:name="Set Link Token">
+								<ee:variables>
+									<ee:set-variable variableName="linkToken"><![CDATA[%dw 2.0
+output application/java
+---
+(uuid() ++ uuid()) replace "-" with ""]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+							<os:store doc:name="Store link" key="#[vars.linkToken]" objectStore="Epic_Files_Link_Store">
+								<os:value><![CDATA[#[output application/java --- {
+	fileId: vars.filesRequest.fileId,
+	mode: vars.filesRequest.mode,
+	epicId: vars.filesRequest.epicId,
+	sfRecordId: vars.filesRequest.sfRecordId,
+	sfUserId: vars.filesRequest.sfUserId,
+	name: vars.linkDecision.name,
+	extension: vars.linkDecision.extension
+}]]]></os:value>
+							</os:store>
+							<flow-ref doc:name="Write audit record" name="epic-files-audit" />
+							<ee:transform doc:name="Set Link Reply">
+								<ee:message>
+									<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ resultCode: "OK", url: vars.filesRequest.downloadBaseUrl ++ vars.linkToken }]]></ee:set-payload>
+								</ee:message>
+							</ee:transform>
+						</when>
+						<otherwise>
+							<logger level="INFO" doc:name="Log refusal" message="#['files/link ' ++ vars.linkDecision.resultCode ++ ' for Salesforce record ' ++ (vars.filesRequest.sfRecordId default '')]" />
+							<ee:transform doc:name="Set Link Refusal Reply">
+								<ee:message>
+									<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ resultCode: vars.linkDecision.resultCode }]]></ee:set-payload>
+								</ee:message>
+							</ee:transform>
+						</otherwise>
+					</choice>
+					<error-handler>
+						<on-error-continue type="ANY" logException="true" doc:name="Applied Epic or store failed">
+							<ee:transform doc:name="Set Link Failure Reply">
+								<ee:message>
+									<ee:set-payload><![CDATA[%dw 2.0
+import failureCode from modules::epicFiles
+output application/json
+---
+{ resultCode: failureCode(error) }]]></ee:set-payload>
+								</ee:message>
+							</ee:transform>
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</otherwise>
+		</choice>
+	</sub-flow>
+
+	<!-- One Log__c row per link handed out: who, which file (Applied Epic id), which records, when, preview or download.
+	     Never the file name, description or contents: Applied Epic files are treated as protected health information.
+	     ht_Message__c is a one-line summary; ht_Details__c holds the rest.
+	     Runs in the background; a failed or rejected write is logged here as a WARN and never blocks the link. -->
+	<sub-flow name="epic-files-audit">
+		<async doc:name="Write in the background">
+			<try doc:name="Write Log__c">
+				<ee:transform doc:name="Set Salesforce Request (audit row)">
+					<ee:variables>
+						<ee:set-variable variableName="salesforceRequest"><![CDATA[%dw 2.0
+output application/java
+var r = vars.filesRequest
+var f = vars.linkDecision
+var verb = if (r.mode == "preview") "Previewed" else "Downloaded"
+var summary = verb ++ " Applied Epic file " ++ r.fileId ++ " (" ++ (f.extension default "") ++ ")"
+---
+{
+	"type": "Log__c",
+	records: [{
+		ht_LogLevel__c: "Info",
+		ht_Status__c: "Resolved",
+		ht_Source__c: "Files component",
+		ht_Operation__c: if (r.mode == "preview") "PREVIEWED" else "DOWNLOADED",
+		ht_RelatedRecord__c: vars.filesRequest.sfRecordId,
+		ht_Epic_Record_Id__c: vars.filesRequest.epicId,
+		(ht_User__c: vars.filesRequest.sfUserId) if (!isBlank(vars.filesRequest.sfUserId)),
+		ht_SourceName__c: "yp-integration",
+		ht_SourceMethod__c: "files/link",
+		ht_OccurredDateTime__c: now(),
+		ht_Message__c: if (sizeOf(summary) > 255) summary[0 to 254] else summary,
+		ht_Details__c: [
+			"Action: " ++ verb ++ " (link handed out)",
+			"File id (Applied Epic attachment): " ++ r.fileId,
+			"File type: " ++ (f.extension default ""),
+			"File size: " ++ ((f.sizeBytes default 0) as String) ++ " bytes",
+			"Attached in Applied Epic on: " ++ (f.attachedOn default ""),
+			"Applied Epic folder id: " ++ (f.folderId default ""),
+			"Applied Epic record: " ++ (r."type" default "") ++ " " ++ (r.epicId default ""),
+			"Salesforce record: " ++ (r.sfRecordId default ""),
+			"Salesforce user: " ++ (if (isBlank(r.sfUserId)) "not sent" else r.sfUserId),
+			"Link valid for: " ++ p('files.linkTtlMinutes') ++ " minutes" ++ (if (r.mode == "download") ", single use" else ""),
+			"Mule environment: " ++ (p('mule.env') default ""),
+			"Correlation id: " ++ correlationId
+		] joinBy "\n"
+	}]
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<flow-ref doc:name="Write log row" name="epic-files-write-log" />
+			</try>
+		</async>
+	</sub-flow>
+
+	<!-- One Log__c row at Error level when a preview or download link fails to open (Applied Epic or storage failed).
+	     Apex never sees this failure: the browser calls /download directly. Error code only, never Applied Epic's reply. -->
+	<sub-flow name="epic-files-download-error">
+		<async doc:name="Write in the background">
+			<try doc:name="Write Log__c">
+				<ee:transform doc:name="Set Salesforce Request (error row)">
+					<ee:variables>
+						<ee:set-variable variableName="salesforceRequest"><![CDATA[%dw 2.0
+output application/java
+var l = vars.link default {}
+var preview = l.mode == "preview"
+var code = (vars.downloadError.namespace default "") ++ ":" ++ (vars.downloadError.identifier default "")
+var summary = "Could not open Applied Epic file " ++ (l.fileId default "") ++ " (" ++ (l.extension default "") ++ ") for " ++ (if (preview) "preview" else "download")
+---
+{
+	"type": "Log__c",
+	records: [{
+		ht_LogLevel__c: "Error",
+		ht_Status__c: "New",
+		ht_Source__c: "Files component",
+		ht_Operation__c: if (preview) "PREVIEWED" else "DOWNLOADED",
+		ht_Error_Code__c: if (sizeOf(code) > 80) code[0 to 79] else code,
+		(ht_RelatedRecord__c: l.sfRecordId) if (!isBlank(l.sfRecordId)),
+		(ht_Epic_Record_Id__c: l.epicId) if (!isBlank(l.epicId)),
+		(ht_User__c: l.sfUserId) if (!isBlank(l.sfUserId)),
+		ht_SourceName__c: "yp-integration",
+		ht_SourceMethod__c: "download",
+		ht_OccurredDateTime__c: now(),
+		ht_Message__c: if (sizeOf(summary) > 255) summary[0 to 254] else summary,
+		ht_Details__c: [
+			"Action: " ++ (if (preview) "preview" else "download") ++ " link opened, file not delivered",
+			"Error code: " ++ code,
+			"File id (Applied Epic attachment): " ++ (l.fileId default ""),
+			"File type: " ++ (l.extension default ""),
+			"Applied Epic record: " ++ (l.epicId default ""),
+			"Salesforce record: " ++ (l.sfRecordId default ""),
+			"Salesforce user: " ++ (if (isBlank(l.sfUserId)) "not sent" else l.sfUserId),
+			"Mule environment: " ++ (p('mule.env') default ""),
+			"Correlation id: " ++ correlationId
+		] joinBy "\n"
+	}]
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<flow-ref doc:name="Write log row" name="epic-files-write-log" />
+			</try>
+		</async>
+	</sub-flow>
+
+	<!-- Creates the Log__c row in vars.salesforceRequest. A rejected or failed write is logged here as a WARN and goes no further. -->
+	<sub-flow name="epic-files-write-log">
+		<try doc:name="Create Log__c">
+			<flow-ref doc:name="Create log row" name="salesforce-create" />
+			<choice doc:name="Row rejected?">
+				<when expression="#[not (payload.successful default false)]">
+					<logger level="WARN" doc:name="Log rejected row" message="#[write({ message: 'files log row rejected by Salesforce', level: vars.salesforceRequest.records[0].ht_LogLevel__c default '', sfRecordId: vars.salesforceRequest.records[0].ht_RelatedRecord__c default '', errors: (payload.items default []) filter (not ($.successful default false)) map { message: $.message, statusCode: $.statusCode, errors: $.payload.errors } }, 'application/json', { indent: false })]" />
+				</when>
+			</choice>
+			<error-handler>
+				<on-error-continue type="ANY" logException="true" doc:name="Log write failed">
+					<logger level="WARN" doc:name="Log write failure" message="#['files log row not written for Salesforce record ' ++ (vars.salesforceRequest.records[0].ht_RelatedRecord__c default '') ++ ': ' ++ (error.description default '')]" />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+
+	<!-- ============================================================ GET /download/{token} (public) -->
+
+	<!-- Streams the file from Applied Epic to the browser. Preview: inline, framed only by the Lightning domains in
+	     files.frameAncestors. Download: attachment, and the token is spent on first use. Nothing is buffered.
+	     Status and headers go out through vars.httpStatus / vars.outboundHeaders (the API listener's response). -->
+	<sub-flow name="epic-files-download">
+		<try doc:name="Stream the file">
+			<os:retrieve doc:name="Find link" key="#[attributes.uriParams.token default '']" objectStore="Epic_Files_Link_Store" target="link">
+				<os:default-value><![CDATA[#[{}]]]></os:default-value>
+			</os:retrieve>
+			<choice doc:name="Link valid?">
+				<when expression="#[vars.link.fileId == null]">
+					<raise-error doc:name="Expired or unknown link" type="FILES:LINK_EXPIRED" description="Link expired or unknown" />
+				</when>
+				<when expression="#[vars.link.mode == 'download']">
+					<!-- Spends the token in one step: a second request with the same token fails here. -->
+					<os:store doc:name="Spend download link" key="#['used-' ++ attributes.uriParams.token]" objectStore="Epic_Files_Link_Store" failIfPresent="true">
+						<os:value><![CDATA[#[true]]]></os:value>
+					</os:store>
+				</when>
+			</choice>
+			<ee:transform doc:name="Set Attachment Request">
+				<ee:variables>
+					<ee:set-variable variableName="appliedRequest"><![CDATA[%dw 2.0
+	output application/java
+	---
+	{ method: "GET", path: "/epic/attachment/v2/attachments/" ++ vars.link.fileId }]]></ee:set-variable>
+				</ee:variables>
+			</ee:transform>
+			<flow-ref doc:name="Get attachment (fresh signed URL)" name="applied-request" />
+			<ee:transform doc:name="Set Download Response">
+				<ee:variables>
+					<ee:set-variable variableName="storageUrl"><![CDATA[%dw 2.0
+	output application/java
+	---
+	payload.file.url]]></ee:set-variable>
+					<ee:set-variable variableName="outboundHeaders"><![CDATA[%dw 2.0
+	import responseHeaders from modules::epicFiles
+	output application/java
+	---
+	responseHeaders(vars.link, p('files.frameAncestors'))]]></ee:set-variable>
+				</ee:variables>
+			</ee:transform>
+			<choice doc:name="File URL present?">
+				<when expression="#[isBlank(vars.storageUrl)]">
+					<raise-error doc:name="No file URL" type="FILES:NOT_AVAILABLE" description="Applied Epic returned no file URL" />
+				</when>
+			</choice>
+			<http:request doc:name="Stream file from storage" config-ref="Epic_Files_Storage_HTTP_Config" method="GET" url="#[vars.storageUrl]">
+				<non-repeatable-stream />
+				<!-- GET with no body; the payload at this point is the attachment JSON. -->
+				<http:body><![CDATA[#[null]]]></http:body>
+			</http:request>
+			<error-handler>
+				<on-error-continue type="FILES:LINK_EXPIRED, OS:KEY_ALREADY_EXISTS" logException="false" doc:name="Expired or used link">
+					<ee:transform doc:name="Set Expired Response">
+						<ee:message>
+							<ee:set-payload><![CDATA[%dw 2.0
+	output text/plain
+	---
+	"This link has expired. Go back to Salesforce and open the file again."]]></ee:set-payload>
+						</ee:message>
+						<ee:variables>
+							<ee:set-variable variableName="httpStatus"><![CDATA[404]]></ee:set-variable>
+							<ee:set-variable variableName="outboundHeaders"><![CDATA[%dw 2.0
+	output application/java
+	---
+	{ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" }]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+				</on-error-continue>
+				<on-error-continue type="ANY" logException="true" doc:name="Applied Epic or storage failed">
+					<ee:transform doc:name="Set Download Error">
+						<ee:variables>
+							<ee:set-variable variableName="downloadError"><![CDATA[%dw 2.0
+output application/java
+---
+{ namespace: error.errorType.namespace default "", identifier: error.errorType.identifier default "" }]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<flow-ref doc:name="Write error record" name="epic-files-download-error" />
+					<ee:transform doc:name="Set Failure Response">
+						<ee:message>
+							<ee:set-payload><![CDATA[%dw 2.0
+	output text/plain
+	---
+	"This file could not be opened. Try again."]]></ee:set-payload>
+						</ee:message>
+						<ee:variables>
+							<ee:set-variable variableName="httpStatus"><![CDATA[502]]></ee:set-variable>
+							<ee:set-variable variableName="outboundHeaders"><![CDATA[%dw 2.0
+	output application/java
+	---
+	{ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" }]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+</mule>
